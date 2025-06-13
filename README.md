@@ -22,7 +22,7 @@ This package includes C++ extensions, so the following libraries and development
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential libjpeg-turbo8-dev libtiff5-dev
-pip install git+https://github.com/YOUR_USERNAME/fast-wsi-validator.git
+pip install git+https://github.com/djlee1/fast-wsi-validator.git
 ```
 
 
