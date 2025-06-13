@@ -1,0 +1,1 @@
+# jpeg-integrity-checker
