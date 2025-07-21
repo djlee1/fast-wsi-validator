@@ -32,7 +32,7 @@ ext_modules = [
 
 setup(
     name='fast-wsi-validator', 
-    version='0.1.0',           
+    version='0.1.2',           
     author='Dongjoo Lee',        
     author_email='dongjoo.lee@portrai.io', 
     description='A highly optimized validator for JPEG tiles in WSI files (TIFF, SVS)',
