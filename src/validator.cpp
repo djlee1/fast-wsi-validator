@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
-#include <utility> // pair 사용
+#include <utility> 
 #include <csetjmp>
 
 #include <tiffio.h>
@@ -13,7 +13,7 @@
 
 namespace py = pybind11;
 
-// --- 이전과 동일한 libjpeg 오류 처리 및 청크 검증 함수 ---
+
 struct my_error_mgr { struct jpeg_error_mgr pub; jmp_buf setjmp_buffer; char message[JMSG_LENGTH_MAX]; };
 void my_error_exit(j_common_ptr cinfo) { my_error_mgr* myerr = (my_error_mgr*) cinfo->err; (*cinfo->err->format_message)(cinfo, myerr->message); longjmp(myerr->setjmp_buffer, 1); }
 std::pair<bool, std::string> validate_jpeg_chunk(const unsigned char* data, unsigned long size) {
@@ -33,8 +33,8 @@ std::pair<bool, std::string> validate_jpeg_chunk(const unsigned char* data, unsi
     return {true, ""};
 }
 
-// --- 최종 속도에 최적화된 검증 함수 ---
-// 반환값: {유효 여부, 첫 오류 메시지}
+
+
 std::pair<bool, std::string> has_jpeg_error(const std::string& filename, bool level_zero_only = true) {
     TIFFSetWarningHandler(nullptr);
     TIFFSetErrorHandler(nullptr);
@@ -48,25 +48,56 @@ std::pair<bool, std::string> has_jpeg_error(const std::string& filename, bool le
         uint16_t compression;
         if (TIFFGetField(tif, TIFFTAG_COMPRESSION, &compression) && (compression == COMPRESSION_JPEG || compression == COMPRESSION_OJPEG)) {
             if (TIFFIsTiled(tif)) {
+
+                // 1. JPEGTABLES
+                uint16_t jpeg_tables_count = 0;
+                void* jpeg_tables_data = nullptr;
+                bool has_jpeg_tables = TIFFGetField(tif, TIFFTAG_JPEGTABLES, &jpeg_tables_count, &jpeg_tables_data);
+
                 tmsize_t tile_size = TIFFTileSize(tif);
                 if (tile_size > 0) {
                     std::vector<unsigned char> buf(tile_size);
                     uint32_t num_tiles = TIFFNumberOfTiles(tif);
+
                     for (uint32_t tile_index = 0; tile_index < num_tiles; ++tile_index) {
                         tmsize_t bytes_read = TIFFReadRawTile(tif, tile_index, buf.data(), tile_size);
                         
-                        // 타일 읽기 실패 시 즉시 반환
                         if (bytes_read < 0) {
                             TIFFClose(tif);
                             return {false, "Failed to read raw tile data"};
                         }
-                        
-                        auto result = validate_jpeg_chunk(buf.data(), bytes_read);
-                        
-                        // ★★★★★ 핵심 최적화: 첫 오류 발견 시 즉시 반환 ★★★★★
-                        if (!result.first) {
-                            TIFFClose(tif); // 리소스 정리 후 반환
-                            return {false, result.second};
+
+
+                        if (has_jpeg_tables && jpeg_tables_count > 0) {
+                            std::vector<unsigned char> combined_data;
+                            
+                            // SOI (Start of Image) marker
+                            combined_data.push_back(0xFF);
+                            combined_data.push_back(0xD8);
+                            
+                            // 전역 테이블 데이터 추가 (DQT, DHT 등)
+                            combined_data.insert(combined_data.end(), (unsigned char*)jpeg_tables_data, ((unsigned char*)jpeg_tables_data) + jpeg_tables_count);
+                            
+                            // 타일 데이터에서 SOI 마커(0xFFD8)가 있다면 건너뛰고 추가
+                            size_t tile_data_offset = 0;
+                            if (bytes_read >= 2 && buf[0] == 0xFF && buf[1] == 0xD8) {
+                                tile_data_offset = 2;
+                            }
+                            combined_data.insert(combined_data.end(), buf.begin() + tile_data_offset, buf.begin() + bytes_read);
+
+                            // 합쳐진 데이터로 유효성 검사
+                            auto result = validate_jpeg_chunk(combined_data.data(), combined_data.size());
+                            if (!result.first) {
+                                TIFFClose(tif);
+                                return {false, result.second};
+                            }
+                        } else {
+                            // 전역 테이블이 없는 경우, 기존 방식대로 검사
+                            auto result = validate_jpeg_chunk(buf.data(), bytes_read);
+                            if (!result.first) {
+                                TIFFClose(tif);
+                                return {false, result.second};
+                            }
                         }
                     }
                 }
@@ -78,11 +109,10 @@ std::pair<bool, std::string> has_jpeg_error(const std::string& filename, bool le
     } while (TIFFReadDirectory(tif));
 
     TIFFClose(tif);
-    // 모든 검사를 통과한 경우
     return {true, ""};
 }
 
-// --- Pybind11 모듈 정의 ---
+
 PYBIND11_MODULE(fast_wsi_validator, m) {
     m.doc() = "A highly optimized validator to check for the existence of JPEG errors in TIFF/SVS files.";
     m.def("check_file", &has_jpeg_error,
